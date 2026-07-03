@@ -40,67 +40,52 @@ def download_data(url: str, dest: Path) -> Path:
 
 
 def load_and_clean(raw_path: Path) -> pd.DataFrame:
-    """Load the raw CER CSV and standardize it into a tidy monthly dataframe."""
+    """Load the raw CER CSV and standardize it into a tidy monthly dataframe.
+
+    The real CER Keystone file reports multiple rows per month per key point —
+    one row per product (e.g. "domestic heavy", "domestic light"). Throughput
+    is genuinely separate per product and should be SUMMED. Available Capacity,
+    however, is reported once per key point per month and simply REPEATED
+    across every product row for that month — it must NOT be summed across
+    products, or capacity gets inflated by however many products were
+    reported that month (this was the root cause of two earlier bugs).
+    """
     df = pd.read_csv(raw_path)
     df.columns = [c.strip() for c in df.columns]
-
     print("Raw columns found in file:", list(df.columns))
 
-    # CER CSVs sometimes ship with slightly different column names/casing,
-    # and can include MORE THAN ONE capacity-related column (e.g. "Available
-    # Capacity" and "Nameplate Capacity"). Matching any column containing
-    # "capacity" and blindly renaming all of them to "capacity" silently
-    # collapses them into duplicate columns, which then get double-counted
-    # during aggregation. To avoid that, only rename the FIRST matching
-    # column for each target field, and explicitly warn if more than one
-    # candidate column was found so it doesn't happen silently again.
+    # Known, confirmed CER column names (from actual file inspection).
+    # Exact match first; fall back to fuzzy matching only if the expected
+    # column isn't found, and print exactly what was chosen either way so
+    # nothing is silently guessed.
+    exact_map = {
+        "date": "Date",
+        "throughput": "Throughput (1000 m3/d)",
+        "capacity": "Available Capacity (1000 m3/d)",
+        "key_point": "Key Point",
+        "product": "Product",
+    }
+
     rename_map = {}
-    matched_targets = {}
-    for col in df.columns:
-        low = col.lower()
-        if low == "date":
-            target = "date"
-        elif low == "year":
-            target = "year"
-        elif low == "month":
-            target = "month"
-        elif "throughput" in low:
-            target = "throughput"
-        elif "available capacity" in low:
-            target = "capacity"
-        elif "capacity" in low:
-            target = "capacity"
-        elif "point" in low:
-            target = "key_point"
-        elif "product" in low:
-            target = "product"
+    for target, exact_col in exact_map.items():
+        if exact_col in df.columns:
+            rename_map[exact_col] = target
+            print(f"Matched '{target}' -> column '{exact_col}' (exact match)")
         else:
-            continue
-
-        if target in matched_targets:
-            print(f"WARNING: column '{col}' also looks like '{target}' but "
-                  f"'{matched_targets[target]}' was already matched first. "
-                  f"Skipping '{col}' to avoid double-counting. Check this manually "
-                  f"if the result looks wrong.")
-            continue
-
-        matched_targets[target] = col
-        rename_map[col] = target
+            # Fallback: fuzzy match, first hit only, with a visible warning
+            candidates = [c for c in df.columns if target.split("_")[0] in c.lower()]
+            if candidates:
+                rename_map[candidates[0]] = target
+                print(f"WARNING: exact column '{exact_col}' not found. "
+                      f"Falling back to fuzzy match '{candidates[0]}' for '{target}'. Verify this is correct.")
+            else:
+                print(f"WARNING: no column found for '{target}'. This field will be missing.")
 
     df = df.rename(columns=rename_map)
-
-    # Drop fully-empty rows/columns, coerce types, drop rows with no throughput value
     df = df.dropna(axis=1, how="all").dropna(how="all")
 
-    # Build a proper date column from either a single "date" field or
-    # separate year/month columns (CER files commonly use the latter).
-    if "date" not in df.columns and {"year", "month"}.issubset(df.columns):
-        df["date"] = pd.to_datetime(
-            df["year"].astype(str) + "-" + df["month"].astype(str) + "-01", errors="coerce"
-        )
-    elif "date" in df.columns:
+    if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
     if "throughput" in df.columns:
         df["throughput"] = pd.to_numeric(df["throughput"], errors="coerce")
     if "capacity" in df.columns:
@@ -113,13 +98,26 @@ def load_and_clean(raw_path: Path) -> pd.DataFrame:
 
 
 def analyze(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculate rolling average throughput and utilization variance."""
-    # If multiple key points exist, aggregate to a single monthly system total
+    """Calculate rolling average throughput and utilization variance.
+
+    Two-stage aggregation to avoid double-counting capacity:
+      1. Per (date, key_point): sum throughput across products, but take
+         capacity ONCE (max, since it's repeated identically per product row).
+      2. Per date: sum both throughput and capacity across key points, since
+         distinct key points genuinely do have separate capacity.
+    """
+    has_capacity = "capacity" in df.columns
+
     if "key_point" in df.columns and "date" in df.columns:
-        monthly = df.groupby("date", as_index=False).agg(
-            throughput=("throughput", "sum"),
-            capacity=("capacity", "sum") if "capacity" in df.columns else ("throughput", "sum"),
-        )
+        agg = {"throughput": ("throughput", "sum")}
+        if has_capacity:
+            agg["capacity"] = ("capacity", "max")  # NOT sum — same value repeated per product row
+        by_point = df.groupby(["date", "key_point"], as_index=False).agg(**agg)
+
+        agg2 = {"throughput": ("throughput", "sum")}
+        if has_capacity:
+            agg2["capacity"] = ("capacity", "sum")  # distinct key points ARE summed here
+        monthly = by_point.groupby("date", as_index=False).agg(**agg2)
     else:
         monthly = df.copy()
 
