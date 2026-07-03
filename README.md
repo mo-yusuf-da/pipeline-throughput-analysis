@@ -4,6 +4,7 @@ A small Python data analysis project examining monthly crude oil pipeline
 throughput and available capacity, using real public data from the
 [Canada Energy Regulator (CER)](https://www.cer-rec.gc.ca/) open data portal.
 
+![Keystone Pipeline Throughput Chart](assets/keystone_throughput_chart.png)
 ## What this does
 
 - Downloads the Keystone Pipeline throughput & capacity dataset directly from CER's open data CSV
