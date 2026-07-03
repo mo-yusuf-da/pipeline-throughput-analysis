@@ -5,6 +5,13 @@ throughput and available capacity, using real public data from the
 [Canada Energy Regulator (CER)](https://www.cer-rec.gc.ca/) open data portal.
 
 ![Keystone Pipeline Throughput Chart](assets/keystone_throughput_chart.png)
+
+## Power BI Dashboard
+
+![Power BI Dashboard](assets/power_bi_dashboard.png)
+
+An interactive Power BI dashboard built on the same cleaned dataset, showing throughput vs. capacity trends, average utilization, and year-over-year utilization comparison. The `.pbix` file is included in this repository.
+
 ## What this does
 
 - Downloads the Keystone Pipeline throughput & capacity dataset directly from CER's open data CSV
