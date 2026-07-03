@@ -42,28 +42,51 @@ def download_data(url: str, dest: Path) -> Path:
 def load_and_clean(raw_path: Path) -> pd.DataFrame:
     """Load the raw CER CSV and standardize it into a tidy monthly dataframe."""
     df = pd.read_csv(raw_path)
-
-    # CER CSVs sometimes ship with slightly different column names/casing
-    # across pipelines and over time. Normalize defensively rather than
-    # assuming exact column names.
     df.columns = [c.strip() for c in df.columns]
+
+    print("Raw columns found in file:", list(df.columns))
+
+    # CER CSVs sometimes ship with slightly different column names/casing,
+    # and can include MORE THAN ONE capacity-related column (e.g. "Available
+    # Capacity" and "Nameplate Capacity"). Matching any column containing
+    # "capacity" and blindly renaming all of them to "capacity" silently
+    # collapses them into duplicate columns, which then get double-counted
+    # during aggregation. To avoid that, only rename the FIRST matching
+    # column for each target field, and explicitly warn if more than one
+    # candidate column was found so it doesn't happen silently again.
     rename_map = {}
+    matched_targets = {}
     for col in df.columns:
         low = col.lower()
         if low == "date":
-            rename_map[col] = "date"
+            target = "date"
         elif low == "year":
-            rename_map[col] = "year"
+            target = "year"
         elif low == "month":
-            rename_map[col] = "month"
+            target = "month"
         elif "throughput" in low:
-            rename_map[col] = "throughput"
+            target = "throughput"
+        elif "available capacity" in low:
+            target = "capacity"
         elif "capacity" in low:
-            rename_map[col] = "capacity"
+            target = "capacity"
         elif "point" in low:
-            rename_map[col] = "key_point"
+            target = "key_point"
         elif "product" in low:
-            rename_map[col] = "product"
+            target = "product"
+        else:
+            continue
+
+        if target in matched_targets:
+            print(f"WARNING: column '{col}' also looks like '{target}' but "
+                  f"'{matched_targets[target]}' was already matched first. "
+                  f"Skipping '{col}' to avoid double-counting. Check this manually "
+                  f"if the result looks wrong.")
+            continue
+
+        matched_targets[target] = col
+        rename_map[col] = target
+
     df = df.rename(columns=rename_map)
 
     # Drop fully-empty rows/columns, coerce types, drop rows with no throughput value
